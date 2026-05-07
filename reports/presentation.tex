@@ -1,0 +1,165 @@
+\documentclass[aspectratio=169, 10pt]{beamer}
+\usepackage[utf8]{inputenc}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{multicol}
+
+% Professional theme selection
+\usetheme{Madrid}
+\usecolortheme{default}
+\setbeamertemplate{navigation symbols}{} % clean up navigation symbols
+\setbeamertemplate{caption}[numbered]
+
+\title[Robust Object Detection]{End-to-End Robust Object Detection and State-Tracking Pipeline}
+\subtitle{Comprehensive Methodology, Visual Analysis, and Performance Metrics}
+\author{Amr Yasser \and Omar Hazem}
+\date{\today}
+
+\begin{document}
+
+\begin{frame}
+    \titlepage
+\end{frame}
+
+\begin{frame}{Project Overview}
+    \textbf{Objective:} Develop a highly robust, real-time object detection and temporal state-tracking system for offline inference.
+    \vspace{0.4cm}
+    
+    \textbf{Multi-Layer State Tracking Architecture:}
+    \begin{enumerate}
+        \item \textbf{Aspect Ratio Gating:} Temporal sustain threshold to prevent noise/flickering.
+        \item \textbf{Centroid Drop Analysis:} Identifies state transitions along the optical axis.
+        \item \textbf{Projectile-Proximity Gating:} Eliminates environmental false positives; requires the Projectile to be within $K$ pixels of the Target Object within a trailing $M$-frame window.
+    \end{enumerate}
+\end{frame}
+
+\begin{frame}{Dataset Construction}
+    \begin{columns}
+        \column{0.5\textwidth}
+        \textbf{Frame Extraction Protocol}
+        \begin{itemize}
+            \item Extracted from raw \texttt{.MOV} (30 fps).
+            \item \textbf{Stride Strategy:} 1:20 (approx 1.5 fps) to eliminate temporal correlation.
+            \item \textbf{Resolution:} Aspect-preserving resize to 1280px via \texttt{cv2.resize}.
+            \item Yielded 557 high-quality keyframes.
+        \end{itemize}
+        
+        \column{0.5\textwidth}
+        \begin{figure}
+            \centering
+            \includegraphics[height=4cm, width=6cm, keepaspectratio]{figures/labels.jpg}
+            \caption{Curated Label Distribution}
+        \end{figure}
+    \end{columns}
+\end{frame}
+
+\begin{frame}{Critical Data Remediation}
+    Initial training yielded catastrophic failure due to malformed Roboflow exports. A custom Python module was engineered to sanitize the dataset:
+    \vspace{0.3cm}
+    \begin{itemize}
+        \item \textbf{Polygon to BBox Conversion:} Derived extrema ($\min(x), \max(x), \min(y), \max(y)$) to yield standardized YOLO format.
+        \item \textbf{Coordinate Clamping:} Strictly clamped values to $[0,1]$ boundary.
+        \item \textbf{Extreme Box Filtration:} Removed impossible geometries (w/h $> 0.45$ or $< 0.005$).
+    \end{itemize}
+    \vspace{0.3cm}
+    \textit{Outcome: 3,051 polygons converted, securing a pristine ground truth.}
+\end{frame}
+
+\begin{frame}{Model Selection \& Training Protocol}
+    \begin{columns}
+        \column{0.5\textwidth}
+        \textbf{Foundation Models Evaluated:}
+        \begin{itemize}
+            \item \texttt{yolo11n.pt} (5.6 MB)
+            \item \texttt{yolov8s.pt} (22.5 MB) - \textit{Selected for optimal speed/accuracy trade-off.}
+        \end{itemize}
+        \vspace{0.2cm}
+        \textbf{Hyperparameters (\texttt{args.yaml}):}
+        \begin{itemize}
+            \item \textbf{Epochs:} 100 (Patience: 20)
+            \item \textbf{Batch Size:} 16, \textbf{Size:} 640
+            \item \textbf{Optimizer:} SGD/Auto (\texttt{lr0: 0.01})
+        \end{itemize}
+
+        \column{0.5\textwidth}
+        \begin{figure}
+            \centering
+            \includegraphics[height=3.5cm, width=6cm, keepaspectratio]{figures/train_batch0.jpg}
+            \caption{Mosaic Training Batch 0}
+        \end{figure}
+    \end{columns}
+\end{frame}
+
+\begin{frame}{Visual Validation: Ground Truth vs. Predictions}
+    \begin{columns}
+        \column{0.5\textwidth}
+        \begin{figure}
+            \centering
+            \includegraphics[height=4.5cm, width=6cm, keepaspectratio]{figures/val_batch0_labels.jpg}
+            \caption{Ground Truth Labels (Val Batch 0)}
+        \end{figure}
+        \column{0.5\textwidth}
+        \begin{figure}
+            \centering
+            \includegraphics[height=4.5cm, width=6cm, keepaspectratio]{figures/val_batch0_pred.jpg}
+            \caption{Network Predictions (Val Batch 0)}
+        \end{figure}
+    \end{columns}
+\end{frame}
+
+\begin{frame}{Quantitative Metrics \& Convergence}
+    \begin{columns}
+        \column{0.4\textwidth}
+        \textbf{Final Validation Metrics}
+        \vspace{0.2cm}\\
+        \begin{tabular}{lr}
+            \toprule
+            \textbf{Metric} & \textbf{Value} \\
+            \midrule
+            mAP@0.5 & \textbf{98.19\%} \\
+            mAP@0.5:0.95 & 93.83\% \\
+            Precision & 92.97\% \\
+            Recall & 96.64\% \\
+            Max F1-Score & \textbf{0.9477} \\
+            \bottomrule
+        \end{tabular}
+        
+        \column{0.6\textwidth}
+        \begin{figure}
+            \centering
+            \includegraphics[height=5cm, width=7.5cm, keepaspectratio]{figures/results.png}
+            \caption{100-Epoch Convergence History}
+        \end{figure}
+    \end{columns}
+\end{frame}
+
+\begin{frame}{Performance Diagnostics}
+    \begin{columns}
+        \column{0.5\textwidth}
+        \begin{figure}
+            \centering
+            \includegraphics[height=4cm, width=5.5cm, keepaspectratio]{figures/PR_curve.png}
+            \caption{Precision-Recall Curve}
+        \end{figure}
+        \column{0.5\textwidth}
+        \begin{figure}
+            \centering
+            \includegraphics[height=4cm, width=5.5cm, keepaspectratio]{figures/confusion_matrix_normalized.png}
+            \caption{Normalized Confusion Matrix}
+        \end{figure}
+    \end{columns}
+    \vspace{0.2cm}
+    \centering \textit{Diagnostics confirm near-perfect class separation and negligible background false positives.}
+\end{frame}
+
+\begin{frame}{Conclusion}
+    \begin{itemize}
+        \item \textbf{Flawless Execution:} The bounding box remediation completely resolved the dataset corruption, allowing the network to converge perfectly.
+        \item \textbf{Superior Accuracy:} The YOLOv8s configuration yielded an exceptional \textbf{98.19\% mAP50}.
+        \item \textbf{System Ready:} Weights (\texttt{best.pt}) and the multi-layer tracking logic are fully prepared for high-fidelity offline inference.
+    \end{itemize}
+    \vspace{0.5cm}
+    \centering \Large \textbf{Questions?}
+\end{frame}
+
+\end{document}

@@ -1,0 +1,32 @@
+# Dataset
+data/
+
+# Specific Document Exclusions
+docs/bowling_implementation_plan.*
+docs/DSAI352_Final_Project_Specification.docx
+
+# LaTeX Build Artifacts
+*.aux
+*.log
+*.out
+*.toc
+*.nav
+*.snm
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+*.bbl
+*.blg
+
+# Python Caches
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+
+# Jupyter Notebook
+.ipynb_checkpoints/
