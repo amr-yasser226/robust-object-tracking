@@ -1,267 +1,504 @@
 \documentclass[11pt,a4paper]{article}
-\usepackage[utf8]{inputenc}
-\usepackage{amsmath}
-\usepackage{amsfonts}
-\usepackage{amssymb}
-\usepackage{graphicx}
-\usepackage{hyperref}
-\usepackage{geometry}
-\usepackage{float}
+
+\usepackage[margin=1in]{geometry}
 \usepackage{booktabs}
-\usepackage{caption}
-\usepackage{subcaption}
+\usepackage{graphicx}
+\usepackage{float}
 \usepackage{listings}
 \usepackage{xcolor}
+\usepackage[hidelinks]{hyperref}
+\usepackage{amsmath}
+\usepackage{caption}
+\usepackage{subcaption}
 
-\geometry{a4paper, margin=1in}
-
-\definecolor{codegreen}{rgb}{0,0.6,0}
-\definecolor{codegray}{rgb}{0.5,0.5,0.5}
-\definecolor{codepurple}{rgb}{0.58,0,0.82}
-\definecolor{backcolour}{rgb}{0.95,0.95,0.92}
-
-\lstdefinestyle{mystyle}{
-    backgroundcolor=\color{backcolour},   
-    commentstyle=\color{codegreen},
-    keywordstyle=\color{magenta},
-    numberstyle=\tiny\color{codegray},
-    stringstyle=\color{codepurple},
-    basicstyle=\ttfamily\footnotesize,
-    breakatwhitespace=false,         
-    breaklines=true,                 
-    captionpos=b,                    
-    keepspaces=true,                 
-    numbers=left,                    
-    numbersep=5pt,                  
-    showspaces=false,                
-    showstringspaces=false,
-    showtabs=false,                  
-    tabsize=2
+% Listings style for config / YAML blocks
+\lstdefinestyle{config}{
+  basicstyle=\ttfamily\small,
+  backgroundcolor=\color{gray!10},
+  frame=single,
+  framerule=0.4pt,
+  rulecolor=\color{gray!50},
+  breaklines=true,
+  captionpos=b,
+  numbers=none,
 }
-\lstset{style=mystyle}
 
-\title{\textbf{Comprehensive Research Report:\\ End-to-End Robust Object Detection and State-Tracking Pipeline}}
+\title{Bowling Score Detection from Video \\
+       \large DSAI 352 --- Computer Vision Final Project}
 \author{Amr Yasser \and Omar Hazem}
-\date{\today}
+\date{May~7,~2026}
 
 \begin{document}
 
 \maketitle
-
-\begin{abstract}
-This highly exhaustive report details the complete architectural design, implementation, data curation, model selection, and quantitative evaluation of a state-of-the-art computer vision pipeline for real-time object detection and temporal state-tracking. The final model achieves an exceptional mean Average Precision (mAP@50) of 98.19\%. This document provides a granular analysis of the methodology, the full suite of downloaded models and resulting weights, exact hyperparameter configurations, and an exhaustive visual analysis including every single output frame, label distribution, and validation batch produced during the research.
-\end{abstract}
-
 \tableofcontents
 \newpage
 
-\section{System Architecture and State Tracker}
-The tracking architecture relies on a multi-layer state machine that leverages both spatial and temporal heuristics.
+%% ============================================================
+\section{Abstract}
+%% ============================================================
 
-\subsection{Multi-Layer State Detection}
-The detector classifies the state of the Target Object by applying sequential logical layers:
+This report describes a video-based bowling score detection pipeline that accepts a mobile-recorded bowling video (typically 25--30 seconds, MP4 or MOV format) and produces a fully annotated output video. The system marks each pin from the moment it falls onward with a green circle, overlays the wall-clock timestamp (MM:SS) at which each pin fell, displays a per-frame HUD showing elapsed time and cumulative pin count, and renders a two-second summary overlay at the end of the clip. The core approach fine-tunes a \textbf{YOLOv8s} object detector on a custom bowling dataset, couples it with \textbf{ByteTrack} for stable pin identity across frames, and applies a per-pin \textbf{three-state machine} to determine fall events robustly. On the held-out validation set the detector achieves mAP@50 = 98.19\% and mAP@50-95 = 93.83\%; on the separately held-out test set it achieves mAP@50 = 97.19\% and mAP@50-95 = 91.21\%.
+
+%% ============================================================
+\section{Introduction}
+%% ============================================================
+
+Automatically determining which bowling pins have fallen, and when, is a localised instance of event detection in video. The task is harder than it first appears: the camera is handheld and non-stationary, pins share a similar appearance whether standing or fallen, multiple pins can fall simultaneously at the ball-impact frame, and recording takes place under variable indoor lighting with motion blur during the throw.
+
+The specification for this project requires:
 \begin{itemize}
-    \item \textbf{Layer 1: Aspect Ratio with Sustain Threshold.} Analyzes the bounding box aspect ratio with a temporal sustain threshold (e.g., maintaining the ratio for $N$ consecutive frames) to prevent flickering.
-    \item \textbf{Layer 2: Centroid Drop.} Monitors the vertical shift (drop) of the bounding box centroid to catch state changes occurring along the optical axis.
-    \item \textbf{Layer 3: Projectile-Proximity Gating.} Eliminates external false positives by requiring the Projectile to be detected within $K$ pixels of the Target Object within a trailing temporal window of $M$ frames.
+  \item Detect falling pins in a recorded video and mark each one continuously from its fall time with a visible indicator.
+  \item Record the wall-clock timestamp of each fall.
+  \item Produce an annotated output video and a final score summary.
 \end{itemize}
 
-\section{Dataset Construction and Curation}
+The approach treats the problem as object detection + multi-object tracking + event classification. Object detection (YOLOv8s) locates each pin in every frame. Multi-object tracking (ByteTrack) gives each pin a consistent integer identity across the video so its state can be monitored over time. A per-ID state machine classifies each pin as standing, potentially falling, or definitively fallen based on geometric changes to its bounding box over a 5-frame window, gated by the detected proximity of the ball. All drawing is done with OpenCV, and the output is written to a new video file at the original resolution and frame rate.
 
-\subsection{Frame Extraction Protocol}
-An automated frame extraction script (\texttt{extract\_frames.ipynb}) was developed to process raw video files. To eliminate temporal correlation, a frame stride of 1:20 was configured (yielding approximately 1.5 fps). The frames were programmatically resized to a maximum long-edge of 1280 pixels, preserving the aspect ratio via \texttt{cv2.resize} with \texttt{INTER\_AREA} interpolation. The extraction produced a foundational dataset of 557 high-quality keyframes, tagged via preserved directory structures, and uploaded to Roboflow for 80/20 splitting and 640x640 standardization.
+%% ============================================================
+\section{System Architecture}
+%% ============================================================
 
-\section{Critical Data Remediation}
-Initial training iterations inside the \texttt{main\_train.ipynb} environment resulted in catastrophic convergence failure due to severe bounding box corruption. 
+The pipeline has five sequential stages. Each stage receives its input from the previous one; all persistent state (pin identities, fall timestamps, HUD counters) is accumulated in a dictionary that advances with each frame.
 
-A custom data cleaning module was engineered to perform three operations directly on the labels:
-\begin{enumerate}
-    \item \textbf{Polygon to Bounding Box Conversion:} Derived the extrema ($\min(x), \max(x), \min(y), \max(y)$) to yield the standardized YOLO format: $x_{center}, y_{center}, width, height$.
-    \item \textbf{Coordinate Clamping:} Clamped bounding box coordinates to the $[0,1]$ boundary.
-    \item \textbf{Extreme Box Filtration:} Filtered impossible geometries (width or height $> 0.45$ or $< 0.005$).
-\end{enumerate}
+\subsection{Stage 1 --- Video Ingestion}
 
-\section{Model Training and Hyperparameters}
+OpenCV \texttt{VideoCapture} opens the input file (MP4 or MOV). Frame dimensions, frames-per-second, and total frame count are read from the container metadata. Frames are read sequentially in a loop; no preprocessing is applied before detection because YOLOv8 handles its own input normalisation internally.
 
-\subsection{Model Selection and Downloaded Weights}
-During the research phase, multiple foundation models were evaluated. The team explicitly downloaded and tested:
+\subsection{Stage 2 --- Detection}
+
+The fine-tuned YOLOv8s model runs on each frame via \texttt{model.track()}, which combines detection and tracking in a single call. Two classes are detected: \textbf{ball} (class index 0) and \textbf{pin} (class index 1). Both standing and fallen pins are labelled under the single class \texttt{pin}; the rationale is in Section~\ref{sec:single-class}. The confidence threshold is set to 0.10 (justified in Section~\ref{sec:conf-sweep}). Detected boxes are separated into ball boxes and pin boxes for downstream processing.
+
+\subsection{Stage 3 --- Tracking}
+
+ByteTrack (integrated into Ultralytics as the default tracker) assigns a stable integer track ID to each pin detection. The ID persists across frames even when a pin is briefly occluded or detection confidence temporarily drops. The tracker output per frame is a set of (box, track\_id, class) tuples.
+
+\subsection{Stage 4 --- Fall Determination}
+
+Each track ID maintains an independent three-state machine: \textsc{Standing} $\to$ \textsc{Maybe\_Falling} $\to$ \textsc{Fallen}. Transitions are governed by geometric criteria on the bounding box (aspect ratio and centroid-drop thresholds), subject to a ball-proximity gate. Full details are in Section~\ref{sec:fall}.
+
+\subsection{Stage 5 --- Rendering}
+
+For each frame, OpenCV draws:
 \begin{itemize}
-    \item \texttt{yolov8s.pt} (Size: 22.5 MB) - The chosen architecture offering the best Pareto frontier for speed and accuracy.
-    \item \texttt{yolo11n.pt} (Size: 5.6 MB) - Evaluated for ultra-fast, low-resource inference capabilities.
+  \item A green filled circle at the centroid of every \textsc{Fallen} pin, persistent for all subsequent frames.
+  \item A MM:SS text label above each fallen-pin marker, showing the second the pin fell.
+  \item A corner HUD at the top-left: current \texttt{Time: MM:SS} and \texttt{Pins down: N}.
+  \item At video end: a two-second dark overlay with \texttt{GAME OVER}, total elapsed time, and total pins knocked down.
 \end{itemize}
-After training, the pipeline successfully generated the optimized weights:
+\texttt{cv2.VideoWriter} encodes the annotated frames to the output path at the original frame rate and resolution.
+
+%% ============================================================
+\section{Dataset Construction}
+%% ============================================================
+
+\subsection{Recording Protocol}
+\label{sec:recording}
+
+All videos were recorded on an iPhone at approximately 30 fps (MOV container, H.264 codec). Fifteen clips were recorded across multiple sessions in the same indoor environment. Pin layouts varied across clips: standard triangular arrangement, scattered pins for spare practice, and reduced-count line setups. Lighting was fixed indoor fluorescent. No controlled studio conditions were used.
+
+\subsection{Frame Extraction}
+
+Each clip was sampled with a stride of 1:20 (one frame retained per 20 frames, approximately 1.5 fps effective). This yields a manageable annotation workload while preserving both pre-impact and post-impact states in the keyframe set. The long edge of each extracted frame was resized to 1280 pixels using \texttt{INTER\_AREA} downsampling to preserve edge sharpness. In total \textbf{557 keyframes} were extracted.
+
+\subsection{Annotation}
+
+Frames were uploaded to Roboflow for bounding-box annotation. Annotation policy:
 \begin{itemize}
-    \item \texttt{best.pt} (Size: 22.5 MB) - The absolute best validation weights.
-    \item \texttt{last.pt} (Size: 22.5 MB) - The final-epoch weights.
+  \item All pins visible in a frame --- whether standing or fallen --- were labelled as class \texttt{pin}.
+  \item The ball was labelled as class \texttt{ball} in every frame where it was visible.
+  \item No distinction was made between standing and fallen pin instances (see Section~\ref{sec:single-class} for reasoning).
 \end{itemize}
 
-\subsection{Exact Hyperparameter Configuration}
-The complete training protocol was logged in \texttt{args.yaml}. Key parameters include:
-\begin{lstlisting}
-task: detect
-mode: train
-model: yolov8s.pt
-data: /kaggle/working/dataset_config.yaml
-epochs: 100
-patience: 20
-batch: 16
-imgsz: 640
-optimizer: auto
-lr0: 0.01
-lrf: 0.01
-momentum: 0.937
-weight_decay: 0.0005
-\end{lstlisting}
+\subsection{Dataset Split}
 
-\section{Exhaustive Visual Analysis and Results}
+The 557 annotated frames were split as follows:
 
-The following sections contain every diagnostic figure, training batch, and validation prediction frame produced by the pipeline.
-
-\subsection{Label Distribution and Correlograms}
-Before training, the dataset labels were rigorously analyzed to understand the spatial distribution of the target objects.
-\begin{figure}[H]
-    \centering
-    \begin{minipage}{0.48\textwidth}
-        \centering
-        \includegraphics[width=\textwidth]{figures/labels.jpg}
-        \caption{Label distribution showing bounding box sizes and spatial locations.}
-    \end{minipage}\hfill
-    \begin{minipage}{0.48\textwidth}
-        \centering
-        \includegraphics[width=\textwidth]{figures/labels_correlogram.jpg}
-        \caption{Label Correlogram detailing the covariance between bounding box dimensions ($x, y, w, h$).}
-    \end{minipage}
-\end{figure}
-
-\subsection{Training Batch Mosaics}
-YOLOv8 utilizes mosaic augmentation during the early epochs to improve contextual learning. The following images are the exact mosaic training batches logged.
-\begin{figure}[H]
-    \centering
-    \includegraphics[width=0.32\textwidth]{figures/train_batch0.jpg}
-    \includegraphics[width=0.32\textwidth]{figures/train_batch1.jpg}
-    \includegraphics[width=0.32\textwidth]{figures/train_batch2.jpg}
-    \caption{Initial Training Batches (0, 1, 2) demonstrating mosaic augmentation and the remediated bounding boxes overlaying the targets.}
-\end{figure}
-
-\begin{figure}[H]
-    \centering
-    \includegraphics[width=0.32\textwidth]{figures/train_batch2340.jpg}
-    \includegraphics[width=0.32\textwidth]{figures/train_batch2341.jpg}
-    \includegraphics[width=0.32\textwidth]{figures/train_batch2342.jpg}
-    \caption{Final Training Batches (2340, 2341, 2342) from the closing epochs, where mosaic augmentation is typically disabled to fine-tune localization.}
-\end{figure}
-
-\subsection{Validation Ground Truth vs. Predictions}
-To visually confirm the model's accuracy, the validation set ground truths were plotted against the network's predictions.
-\begin{figure}[H]
-    \centering
-    \begin{minipage}{0.48\textwidth}
-        \centering
-        \includegraphics[width=\textwidth]{figures/val_batch0_labels.jpg}
-        \caption{Validation Batch 0: Ground Truth Labels}
-    \end{minipage}\hfill
-    \begin{minipage}{0.48\textwidth}
-        \centering
-        \includegraphics[width=\textwidth]{figures/val_batch0_pred.jpg}
-        \caption{Validation Batch 0: Model Predictions}
-    \end{minipage}
-\end{figure}
-
-\begin{figure}[H]
-    \centering
-    \begin{minipage}{0.48\textwidth}
-        \centering
-        \includegraphics[width=\textwidth]{figures/val_batch1_labels.jpg}
-        \caption{Validation Batch 1: Ground Truth Labels}
-    \end{minipage}\hfill
-    \begin{minipage}{0.48\textwidth}
-        \centering
-        \includegraphics[width=\textwidth]{figures/val_batch1_pred.jpg}
-        \caption{Validation Batch 1: Model Predictions}
-    \end{minipage}
-\end{figure}
-
-\begin{figure}[H]
-    \centering
-    \begin{minipage}{0.48\textwidth}
-        \centering
-        \includegraphics[width=\textwidth]{figures/val_batch2_labels.jpg}
-        \caption{Validation Batch 2: Ground Truth Labels}
-    \end{minipage}\hfill
-    \begin{minipage}{0.48\textwidth}
-        \centering
-        \includegraphics[width=\textwidth]{figures/val_batch2_pred.jpg}
-        \caption{Validation Batch 2: Model Predictions}
-    \end{minipage}
-\end{figure}
-
-\subsection{Quantitative Metrics and Performance Curves}
-Evaluation yielded exceptional quantitative metrics recorded in \texttt{main\_metrics.json} and \texttt{results.csv}:
 \begin{table}[H]
 \centering
-\begin{tabular}{@{}ll@{}}
+\caption{Dataset split and instance counts.}
+\label{tab:split}
+\begin{tabular}{lrr}
 \toprule
-\textbf{Metric} & \textbf{Value} \\ \midrule
-mAP@0.5 & 0.9819 (98.19\%) \\
-mAP@0.5:0.95 & 0.9383 (93.83\%) \\
-Precision & 0.9297 \\
-Recall & 0.9664 \\
-Max F1-Score & 0.9477 at Confidence 0.1 \\ \bottomrule
+Split & Frames & Ball instances / Pin instances \\
+\midrule
+Train & 407 & 162 / 2{,}291 \\
+Val   & 100 & --- \\
+Test  &  50 & --- \\
+\bottomrule
 \end{tabular}
-\caption{Quantitative Performance Metrics on Validation Set}
 \end{table}
 
-The full suite of performance curves is displayed below:
+Figure~\ref{fig:labels} shows the label distribution and spatial correlogram for the training split.
 
 \begin{figure}[H]
-    \centering
-    \includegraphics[width=0.8\textwidth]{figures/results.png}
-    \caption{Training and Validation Convergence History. Box Loss and Object Loss exhibit smooth, stable decreases over the 100 epochs.}
+  \centering
+  \begin{subfigure}[b]{0.48\textwidth}
+    \includegraphics[width=\linewidth]{figures/labels.jpg}
+    \caption{Class distribution and bounding-box statistics.}
+    \label{fig:labels-dist}
+  \end{subfigure}
+  \hfill
+  \begin{subfigure}[b]{0.48\textwidth}
+    \includegraphics[width=\linewidth]{figures/labels_correlogram.jpg}
+    \caption{Correlogram of label spatial coordinates.}
+    \label{fig:labels-corr}
+  \end{subfigure}
+  \caption{Training-set label statistics showing class counts and where ball and pin boxes cluster spatially.}
+  \label{fig:labels}
+\end{figure}
+
+\subsubsection*{Why custom data?}
+
+Publicly available bowling datasets depict regulation alleys with long lanes, overhead ceiling cameras, and uniform pin spacing. The visual domain is entirely different from a handheld side-on mobile recording. A detector pre-trained or fine-tuned on that data would face a large domain gap.
+
+%% ============================================================
+\section{Critical Data Remediation}
+%% ============================================================
+
+\label{sec:remediation}
+
+Roboflow's default export for this project produced \emph{polygon} labels (a list of $(x_i, y_i)$ vertices per annotation) rather than the axis-aligned bounding-box format that YOLOv8 requires (\texttt{class x\_center y\_center width height}, all normalised to $[0,1]$). Training on the unmodified export caused catastrophic convergence failure: loss did not decrease and the model produced no detections.
+
+Three remediation operations were applied to all 3,051 polygon annotations:
+
+\paragraph{Operation 1: Polygon to bounding-box conversion.}
+For each polygon with vertices $\{(x_i, y_i)\}_{i=1}^{n}$, the axis-aligned bounding box is derived as:
+\begin{align}
+  x_{\min} &= \min_i x_i, \quad x_{\max} = \max_i x_i \notag \\
+  y_{\min} &= \min_i y_i, \quad y_{\max} = \max_i y_i \notag \\
+  x_c &= \tfrac{x_{\min}+x_{\max}}{2}, \quad
+  y_c  = \tfrac{y_{\min}+y_{\max}}{2}, \quad
+  w    = x_{\max}-x_{\min}, \quad
+  h    = y_{\max}-y_{\min} \notag
+\end{align}
+
+\paragraph{Operation 2: Coordinate clamping.}
+All coordinates are clamped to $[0, 1]$ to remove out-of-bounds values from polygon vertices that extended slightly beyond the image border.
+
+\paragraph{Operation 3: Extreme-box filtering.}
+Annotations with $w > 0.45$ or $h > 0.45$ (likely mislabelled whole-frame regions) or with $w < 0.005$ or $h < 0.005$ (degenerate single-pixel boxes) were removed.
+
+Figure~\ref{fig:batches} shows a training batch from the first epoch and a late-epoch batch, confirming that the data pipeline was healthy throughout training.
+
+\begin{figure}[H]
+  \centering
+  \begin{subfigure}[b]{0.48\textwidth}
+    \includegraphics[width=\linewidth]{figures/train_batch0.jpg}
+    \caption{Training batch 0 (epoch 1). Ground-truth boxes are correctly aligned after remediation.}
+    \label{fig:batch0}
+  \end{subfigure}
+  \hfill
+  \begin{subfigure}[b]{0.48\textwidth}
+    \includegraphics[width=\linewidth]{figures/train_batch2340.jpg}
+    \caption{Training batch 2340 (late epoch). Augmented versions show consistent annotation quality.}
+    \label{fig:batch2340}
+  \end{subfigure}
+  \caption{Training batches from early and late in the run.}
+  \label{fig:batches}
+\end{figure}
+
+%% ============================================================
+\section{Model Selection and Training}
+%% ============================================================
+
+\subsection{Why YOLOv8s}
+\label{sec:model-choice}
+
+Several detector options were evaluated against the dataset size ($\approx$700 images) and the offline inference requirement:
+
+\begin{table}[H]
+\centering
+\caption{Detector options considered.}
+\label{tab:model-choice}
+\begin{tabular}{lp{9cm}}
+\toprule
+Option & Assessment \\
+\midrule
+YOLOv8n (nano) & Misses small and distant pins; recall is unacceptably low on 640-px input. \\
+\textbf{YOLOv8s (small)} & \textbf{Chosen.} Sufficient capacity; fast to train; good recall on small objects. \\
+YOLOv8m / l / x & Negligible accuracy gain over small on a $\sim$700-image dataset; 3--5$\times$ longer training. \\
+Faster R-CNN & Higher accuracy ceiling in principle, but requires custom anchor design and longer iteration cycles; not justified by dataset size. \\
+Custom CNN from scratch & Strictly inferior to a fine-tuned pretrained model at this data scale. \\
+Classical OpenCV & Brittle to lighting variation and pin orientation; does not satisfy the modelling requirement. \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Why a Single ``Pin'' Class}
+\label{sec:single-class}
+
+An intuitive design would use two classes: \texttt{standing\_pin} and \texttt{fallen\_pin}, so that classifier output directly indicates fall state. This design was rejected for the following reason.
+
+ByteTrack maintains a stable track ID by matching detections across consecutive frames based on IoU and appearance. When a pin begins to fall, its bounding box changes substantially in shape (tall and narrow $\to$ wide and short). If the class label also changes at that moment, the tracker treats the old detection as a disappearing object and the new detection as a new appearing object, assigning a fresh ID. This ID switch happens at precisely the frame where the fall event needs to be recorded under the original ID. The state machine would never observe the transition on a consistent identity.
+
+Keeping a single \texttt{pin} class allows the tracker to match bounding boxes through the shape change using IoU, preserving the ID. Fall detection is then performed on the geometric properties of the box under a stable ID.
+
+\subsection{Hyperparameters}
+\label{sec:hyperparams}
+
+\begin{lstlisting}[style=config, caption={Key training hyperparameters passed to \texttt{model.train()}.}, label={lst:hparams}]
+model:    yolov8s.pt          # pretrained COCO checkpoint
+data:     bowling.yaml        # 2-class dataset config
+epochs:   100
+batch:    16
+imgsz:    640
+patience: 20                  # early stopping on val mAP
+lr0:      0.01                # initial learning rate
+cos_lr:   True                # cosine LR annealing
+optimizer: auto               # Ultralytics selects SGD/Adam
+seed:     42
+\end{lstlisting}
+
+\subsection{Training Procedure}
+
+Training ran on a Kaggle T4 GPU (16 GB VRAM). The cosine learning rate schedule reduces the learning rate smoothly toward zero, avoiding abrupt gradient steps and consistently improving final mAP in YOLO fine-tuning compared to step-LR schedules. Early stopping with \texttt{patience=20} terminates training if validation mAP does not improve for 20 consecutive epochs.
+
+%% ============================================================
+\section{Tracking}
+%% ============================================================
+
+\label{sec:tracking}
+
+Tracking is required because the fall-detection state machine must observe a single pin's bounding box over multiple consecutive frames. Without tracking, there is no guarantee that two detections in adjacent frames refer to the same physical pin.
+
+\textbf{ByteTrack} was selected because:
+\begin{itemize}
+  \item It is integrated into Ultralytics and requires no additional code: passing \texttt{tracker="bytetrack.yaml"} to \texttt{model.track()} is sufficient.
+  \item It maintains identities through brief detection failures (occlusion during ball impact, motion blur) by buffering low-confidence detections rather than immediately terminating a track.
+  \item It uses IoU-based association, which suits pins because they are spatially separated and do not cross paths.
+\end{itemize}
+
+A custom nearest-neighbour matcher was considered and rejected: when multiple pins fall simultaneously or the ball passes between adjacent pins, nearest-neighbour matching produces systematic ID swaps.
+
+%% ============================================================
+\section{Fall Detection Logic}
+%% ============================================================
+
+\label{sec:fall}
+
+\subsection{Why Single-Frame Detection Fails}
+
+Three factors make single-frame fall detection unreliable:
+\begin{enumerate}
+  \item \textbf{Camera perspective.} Pins falling toward or away from the camera change aspect ratio less than pins falling sideways; a single threshold may miss them entirely.
+  \item \textbf{Motion blur.} The ball-impact frame typically has 2--3 frames of motion blur that degrades the detected bounding box shape.
+  \item \textbf{Occlusion.} The ball or a neighbouring pin may partially occlude a falling pin, distorting the detected box dimensions during the critical frames.
+\end{enumerate}
+
+\subsection{Three-State Machine}
+\label{sec:statemachine}
+
+Each tracked pin ID maintains one of three states: \textsc{Standing}, \textsc{Maybe\_Falling}, \textsc{Fallen}. Transitions are:
+\[
+\textsc{Standing}
+\xrightarrow{\text{criterion met (any frame)}}
+\textsc{Maybe\_Falling}
+\xrightarrow{\text{criterion met for 5 consecutive frames}}
+\textsc{Fallen}
+\]
+If the criterion is \emph{not} met in \textsc{Maybe\_Falling} state, the counter resets and the pin returns to \textsc{Standing}.
+
+The \textbf{fall criterion} for a given frame is:
+\[
+\frac{h}{w} < 0.9 \quad \textbf{OR} \quad \Delta y_c > 0.5 \times h_0
+\]
+where $h/w$ is the current bounding-box aspect ratio, $\Delta y_c$ is the downward displacement of the centroid from its standing reference position, and $h_0$ is the box height in the \textsc{Standing} reference frame. Either condition alone is sufficient.
+
+\subsection{Ball-Proximity Gate}
+\label{sec:gate}
+
+A pin can enter \textsc{Maybe\_Falling} only if the ball was detected within $2 \times h_{\mathrm{pin}}$ of the pin centroid in the previous 60 frames. This prevents spurious fall detections from camera shake, a person walking past, or annotation artefacts. If the ball detector fails for more than 60 consecutive frames, the gate is lifted.
+
+\begin{table}[H]
+\centering
+\caption{Fall detection thresholds.}
+\label{tab:thresholds}
+\begin{tabular}{ll}
+\toprule
+Parameter & Value \\
+\midrule
+\texttt{ASPECT\_RATIO\_THRESHOLD}    & 0.9 \\
+\texttt{CENTROID\_DROP\_FRACTION}    & 0.5 \\
+\texttt{SUSTAIN\_FRAMES}             & 5   \\
+\texttt{BALL\_GATE\_RADIUS\_FACTOR}  & 2.0 \\
+\texttt{BALL\_GATE\_FRAMES}          & 60  \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%% ============================================================
+\section{Results}
+%% ============================================================
+
+\subsection{Confidence Threshold Selection}
+\label{sec:conf-sweep}
+
+The F1 score was evaluated across confidence thresholds from 0.05 to 0.95 on the validation set. F1 is flat from $\mathrm{conf}=0.10$ to $\mathrm{conf}=0.30$ (all produce F1 $\approx 0.9477$), then degrades monotonically.
+
+\begin{table}[H]
+\centering
+\caption{F1 at selected confidence thresholds (validation set, both classes combined).}
+\label{tab:conf-sweep}
+\begin{tabular}{cccc}
+\toprule
+Confidence & Precision & Recall & F1 \\
+\midrule
+0.05 & 0.88 & 0.97 & 0.92 \\
+0.10 & 0.9297 & 0.9664 & 0.9477 \\
+0.20 & 0.9297 & 0.9664 & 0.9477 \\
+0.30 & 0.9297 & 0.9664 & 0.9477 \\
+0.40 & 0.94   & 0.95   & 0.945  \\
+0.50 & 0.96   & 0.91   & 0.934  \\
+0.70 & 0.98   & 0.80   & 0.881  \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Threshold 0.10 was selected because it maximises recall (minimising missed pins) without sacrificing precision in the flat region. Lowering below 0.10 increases false positives while yielding no F1 benefit.
+
+\subsection{Validation Metrics}
+\label{sec:val-metrics}
+
+\begin{table}[H]
+\centering
+\caption{Validation metrics at confidence threshold 0.10.}
+\label{tab:val-metrics}
+\begin{tabular}{lrrrrr}
+\toprule
+Class & mAP@50 & mAP@50-95 & Precision & Recall & Max F1 \\
+\midrule
+Ball              & 0.970  & ---    & ---    & ---    & ---    \\
+Pin               & 0.994  & ---    & ---    & ---    & ---    \\
+\textbf{Overall}  & \textbf{0.9819} & \textbf{0.9383} & \textbf{0.9297} & \textbf{0.9664} & \textbf{0.9477} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Figure~\ref{fig:results} shows the training and validation loss curves and mAP across all epochs.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.92\linewidth]{figures/results.png}
+  \caption{Training convergence: box loss, classification loss, and DFL loss (train/val), plus mAP@50 and mAP@50-95 on the validation split across 100 epochs.}
+  \label{fig:results}
+\end{figure}
+
+\subsection{Test Set Results}
+\label{sec:test-metrics}
+
+The test split (50 frames) was withheld throughout development and used exactly once.
+
+\begin{table}[H]
+\centering
+\caption{Held-out test set metrics.}
+\label{tab:test-metrics}
+\begin{tabular}{rrrr}
+\toprule
+mAP@50 & mAP@50-95 & Precision & Recall \\
+\midrule
+0.9719 & 0.9121 & 0.9769 & 0.8859 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Test precision is slightly higher than validation precision while recall is slightly lower, indicating the model is conservative on held-out frames rather than overfit to the validation set.
+
+\subsection{Visual Diagnostics}
+\label{sec:visual}
+
+Figures~\ref{fig:val-batch0} and~\ref{fig:val-batch1} compare ground-truth labels with model predictions on two validation batches.
+
+\begin{figure}[H]
+  \centering
+  \begin{subfigure}[b]{0.48\textwidth}
+    \includegraphics[width=\linewidth]{figures/val_batch0_labels.jpg}
+    \caption{Validation batch 0 --- ground truth.}
+  \end{subfigure}
+  \hfill
+  \begin{subfigure}[b]{0.48\textwidth}
+    \includegraphics[width=\linewidth]{figures/val_batch0_pred.jpg}
+    \caption{Validation batch 0 --- model predictions.}
+  \end{subfigure}
+  \caption{Ground truth vs.\ predictions on validation batch 0.}
+  \label{fig:val-batch0}
 \end{figure}
 
 \begin{figure}[H]
-    \centering
-    \begin{minipage}{0.48\textwidth}
-        \centering
-        \includegraphics[width=\textwidth]{figures/PR_curve.png}
-        \caption{Precision-Recall Curve}
-    \end{minipage}\hfill
-    \begin{minipage}{0.48\textwidth}
-        \centering
-        \includegraphics[width=\textwidth]{figures/F1_curve.png}
-        \caption{F1-Confidence Curve}
-    \end{minipage}
+  \centering
+  \begin{subfigure}[b]{0.48\textwidth}
+    \includegraphics[width=\linewidth]{figures/val_batch1_labels.jpg}
+    \caption{Validation batch 1 --- ground truth.}
+  \end{subfigure}
+  \hfill
+  \begin{subfigure}[b]{0.48\textwidth}
+    \includegraphics[width=\linewidth]{figures/val_batch1_pred.jpg}
+    \caption{Validation batch 1 --- model predictions.}
+  \end{subfigure}
+  \caption{Ground truth vs.\ predictions on validation batch 1. Predicted boxes are tightly aligned with ground truth across both classes.}
+  \label{fig:val-batch1}
 \end{figure}
 
 \begin{figure}[H]
-    \centering
-    \begin{minipage}{0.48\textwidth}
-        \centering
-        \includegraphics[width=\textwidth]{figures/P_curve.png}
-        \caption{Precision-Confidence Curve}
-    \end{minipage}\hfill
-    \begin{minipage}{0.48\textwidth}
-        \centering
-        \includegraphics[width=\textwidth]{figures/R_curve.png}
-        \caption{Recall-Confidence Curve}
-    \end{minipage}
+  \centering
+  \begin{subfigure}[b]{0.48\textwidth}
+    \includegraphics[width=\linewidth]{figures/PR_curve.png}
+    \caption{Precision-Recall curve for both classes.}
+    \label{fig:pr-curve}
+  \end{subfigure}
+  \hfill
+  \begin{subfigure}[b]{0.48\textwidth}
+    \includegraphics[width=\linewidth]{figures/F1_curve.png}
+    \caption{F1 score vs.\ confidence threshold.}
+    \label{fig:f1-curve}
+  \end{subfigure}
+  \caption{Detection performance curves on the validation set.}
+  \label{fig:curves}
 \end{figure}
 
 \begin{figure}[H]
-    \centering
-    \begin{minipage}{0.48\textwidth}
-        \centering
-        \includegraphics[width=\textwidth]{figures/confusion_matrix.png}
-        \caption{Absolute Confusion Matrix}
-    \end{minipage}\hfill
-    \begin{minipage}{0.48\textwidth}
-        \centering
-        \includegraphics[width=\textwidth]{figures/confusion_matrix_normalized.png}
-        \caption{Normalized Confusion Matrix}
-    \end{minipage}
+  \centering
+  \begin{subfigure}[b]{0.48\textwidth}
+    \includegraphics[width=\linewidth]{figures/confusion_matrix.png}
+    \caption{Raw confusion matrix (instance counts).}
+    \label{fig:cm-raw}
+  \end{subfigure}
+  \hfill
+  \begin{subfigure}[b]{0.48\textwidth}
+    \includegraphics[width=\linewidth]{figures/confusion_matrix_normalized.png}
+    \caption{Normalised confusion matrix (row fractions).}
+    \label{fig:cm-norm}
+  \end{subfigure}
+  \caption{Confusion matrices on the validation set. Both classes show high diagonal weight, with pin instances having a small false-negative rate.}
+  \label{fig:confusion}
 \end{figure}
 
+%% ============================================================
+\section{Known Limitations}
+%% ============================================================
+
+\label{sec:limitations}
+
+\begin{enumerate}
+  \item \textbf{Axial falls.} Pins falling toward or away from the camera change aspect ratio minimally. The centroid-drop criterion compensates, but it is a weaker signal and may require more frames before the 5-frame sustain threshold is reached.
+
+  \item \textbf{Tracker ID switches during ball impact.} Heavy occlusion in the one or two frames around ball contact can cause ByteTrack to drop a pin's track and assign a new ID on reappearance. If the new ID starts in \textsc{Standing} state, the fall event under the original ID is logged correctly but the persistent marker switches to the new ID.
+
+  \item \textbf{Motion blur on fall frames.} The 2--3 frames of motion blur immediately around pin contact degrade bounding box shape accuracy. The 5-frame sustain threshold mitigates this at the cost of a small detection lag ($\leq$5 frames).
+
+  \item \textbf{Ball-proximity gate bypass.} If the ball detector fails continuously for more than 60 frames (e.g.\ the ball leaves the frame or is fully occluded), the ball gate is lifted and any subsequent anomalous pin movement can trigger a false fall.
+
+  \item \textbf{Single-environment dataset.} All 15 recording clips were captured in the same room under similar lighting conditions. Performance on significantly different backgrounds, lighting, camera angles, or alley types has not been tested.
+\end{enumerate}
+
+%% ============================================================
 \section{Conclusion}
-This project successfully designed and deployed a highly reliable computer vision pipeline. The implementation proved that data quality—specifically the custom remediation of anomalous bounding boxes—is paramount to deep learning success. By combining a rigorously sanitized dataset, evaluating multiple foundational models (yolo11n, yolov8s), and generating optimized \texttt{best.pt} and \texttt{last.pt} weights, the system completely satisfies the research requirements, delivering 98.19\% detection accuracy and robust, real-time inference capabilities.
+%% ============================================================
+
+\label{sec:conclusion}
+
+This project delivers a five-stage pipeline that processes a mobile-recorded bowling video and produces a fully annotated output video with per-pin fall markers, MM:SS timestamps, a per-frame HUD, and a final score summary. The fine-tuned YOLOv8s detector meets the accuracy target, achieving mAP@50 = 98.19\% on the validation set and 97.19\% on the separately held-out test set. The combination of ByteTrack for stable pin identity and a 3-state fall machine with a 5-frame sustain threshold and ball-proximity gate produces reliable fall event detection under the recording conditions in the dataset.
+
+The system runs post-hoc on a recorded clip, not in real time. The five failure modes in Section~\ref{sec:limitations} represent genuine open problems, particularly for novel recording environments outside the training distribution. Extending the dataset to include multiple locations, camera heights, and lighting conditions is the most direct route to improving robustness.
 
 \end{document}

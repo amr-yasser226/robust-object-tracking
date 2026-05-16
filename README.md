@@ -1,72 +1,116 @@
-# Robust Object Detection and State-Tracking Pipeline
+# Bowling Score Detection from Video
 
-![License](https://img.shields.io/badge/License-MIT-blue.svg)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-green)
 ![PyTorch](https://img.shields.io/badge/PyTorch-2.0%2B-ee4c2c)
 ![YOLOv8](https://img.shields.io/badge/YOLOv8-Ultralytics-yellow)
 
-## Overview
+DSAI 352 — Computer Vision Final Project, Spring 2026.
+**Authors:** Amr Yasser · Omar Hazem
 
-This repository contains the source code, methodology, and evaluation artifacts for a professional-grade object detection and temporal state-tracking system. The project was meticulously developed from scratch, encompassing raw video frame extraction, custom dataset curation, algorithmic bounding box remediation, and high-fidelity inference using YOLOv8.
+---
 
-The pipeline achieves an exceptional **mAP@50 of 98.19%** and incorporates a multi-layer state tracker (aspect ratio, centroid drop, and proximity gating) to guarantee zero environmental false positives.
+## What This Does
 
-## Key Features
+Takes a recorded bowling video as input and produces:
+- An **annotated output video** with a green circle drawn on each pin from the moment it falls, labelled with the fall timestamp (MM:SS)
+- A **corner HUD** on every frame showing elapsed time and current pin-down count
+- A **final summary overlay** for the last 2 seconds: total time and total pins knocked down
+- An **`events_log.json`** with the exact frame and timestamp of every fall event
 
-- **Automated Data Extraction**: `extract_frames.ipynb` samples `.MOV` video files with a defined 1:20 stride to minimize temporal correlation.
-- **In-Place Bounding Box Remediation**: A custom Python module that intercepts malformed polygon coordinates, calculates accurate extrema, clamps bounds, and filters extreme geometries to produce a pristine ground truth.
-- **Robust Model Training**: Leverages the YOLOv8s architecture, logging all configurations and artifacts natively.
-- **Multi-Layer Tracking**: A highly robust post-processing state machine that decodes object interactions across frames.
-- **Inference Demo**: The pipeline has been fully verified on unseen test data. The generated inference video correctly tracks state changes in real-time, outputting an overlaid mp4 file demonstrating perfect localization and tracking.
+The detection model is a YOLOv8s fine-tuned on a custom bowling dataset (mAP@50 = 98.19%). Tracking uses ByteTrack (built into Ultralytics). Fall detection is a 3-state machine (STANDING → MAYBE_FALLING → FALLEN) with aspect-ratio gating, centroid-drop gating, and ball-proximity gating to suppress false positives.
+
+---
 
 ## Repository Structure
 
-```text
-├── data/                    # Dataset configs and raw videos (ignored via .gitignore)
-├── docs/                    # Official project specifications and architectural documentation
+```
+├── data/
+│   └── dataset_clean/          # Curated dataset (407 train / 100 val / 50 test)
+├── docs/                       # Project specification and implementation plan (PDF)
+├── inference/
+│   ├── inputs/                 # ← PUT YOUR VIDEO HERE
+│   ├── outputs/                # ← ANNOTATED VIDEO APPEARS HERE
+│   ├── main.py                 # Entry point — runs the full pipeline
+│   └── src/
+│       ├── fall_detector.py    # 3-state machine
+│       └── renderer.py         # OpenCV drawing helpers
 ├── models/
-│   ├── pretrained/          # Foundational YOLO weights (yolov8s.pt, yolo11n.pt)
-│   └── trained/             # Final converged weights (best.pt, last.pt)
-├── notebooks/               # Core Jupyter notebooks (extraction, training, inference)
-├── reports/                 # Comprehensive scientific LaTeX reports and Beamer presentation
-│   └── figures/             # Diagnostic plots, confusion matrices, and metrics
-└── results/                 # Training logs and sample predictions
+│   ├── pretrained/             # yolov8s.pt, yolo11n.pt
+│   └── trained/                # best.pt, last.pt  ← trained weights
+├── notebooks/
+│   ├── extract_frames.ipynb    # Frame extraction from raw videos
+│   └── main_train.ipynb        # YOLOv8 training on Kaggle
+├── reports/
+│   ├── report.pdf              # Technical report
+│   └── presentation.pdf        # Beamer presentation
+├── results/
+│   ├── training_logs/          # results.csv, metrics.json, args.yaml, TensorBoard
+│   └── sample_predictions/     # 8 sample prediction images from validation set
+└── requirements.txt
 ```
 
-## Authors
+---
 
-- **Amr Yasser**
-- **Omar Hazem**
+## Quick Start
 
-## Getting Started
-
-### 1. Environment Setup
-
-Ensure you have a Python 3.10+ environment with PyTorch and Ultralytics installed:
+### 1. Install dependencies
 
 ```bash
-pip install -r requirements.txt  # If generated
-pip install ultralytics torch torchvision opencv-python matplotlib
+pip install -r requirements.txt
 ```
 
-### 2. Training the Pipeline
+### 2. Place your video
 
-To re-run the training pipeline from the curated dataset, execute the `main_train.ipynb` notebook. The script will automatically trigger the custom remediation module before initializing the YOLOv8 trainer.
+Copy your `.mp4` or `.mov` bowling video into:
 
-### 3. Compiling the Research Reports
+```
+inference/inputs/
+```
 
-The project is extensively documented via a comprehensive scientific report and presentation. To generate the PDFs locally:
+### 3. Run the pipeline
 
 ```bash
-cd reports
-pdflatex report.tex
-pdflatex presentation.tex
+cd inference
+python main.py --input inputs/your_video.mp4
 ```
 
-## Inference Demo
+The annotated video is written to `inference/outputs/annotated.mp4`.
+The events log is written to `inference/outputs/events_log.json`.
 
-To validate the model, an inference pipeline was run over a complete testing video using the `best.pt` weights. The model successfully detected all state transitions, gating out irrelevant background noise and logging accurate temporal transitions. 
+### Optional flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--weights` | `../models/trained/best.pt` | Path to trained weights |
+| `--output` | `outputs/annotated.mp4` | Output video path |
+| `--conf` | `0.1` | Detection confidence threshold |
+| `--imgsz` | `640` | Inference image size |
+
+---
+
+## Model Performance
+
+| Metric | Validation | Test |
+|--------|-----------|------|
+| mAP@50 | **98.19%** | 97.19% |
+| mAP@50-95 | 93.83% | 91.21% |
+| Precision | 92.97% | 97.69% |
+| Recall | 96.64% | 88.59% |
+
+Best F1 confidence threshold: **0.1** (determined by sweep on validation set).
+
+Per-class: Pin AP = 0.994 · Ball AP = 0.970
+
+Training: YOLOv8s, 100 epochs, imgsz=640, batch=16, cosine LR, Kaggle T4 GPU.
+
+---
+
+## Training
+
+To re-run training from scratch, open and execute `notebooks/main_train.ipynb` on Kaggle with the dataset attached. The notebook handles dataset cleaning, training, evaluation, and artifact export.
+
+---
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+MIT License — see [LICENSE](LICENSE).
